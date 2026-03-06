@@ -1,0 +1,23 @@
+{
+    "name": "polanger/required-plugins",
+    "description": "A minimal ~500 line WordPress library for requiring plugins. Clean replacement for TGMPA.",
+    "version": "1.0.0",
+    "type": "library",
+    "license": "GPL-2.0-or-later",
+    "authors": [
+        {
+            "name": "Polanger",
+            "homepage": "https://polanger.com"
+        }
+    ],
+    "homepage": "https://github.com/polanger/required-plugins",
+    "keywords": [
+        "wordpress",
+        "plugins",
+        "tgmpa",
+        "required-plugins"
+    ],
+    "require": {
+        "php": ">=7.4"
+    }
+}
