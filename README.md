@@ -4,33 +4,21 @@
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-purple.svg)](https://php.net/)
 [![License](https://img.shields.io/badge/License-GPL--2.0--or--later-green.svg)](https://www.gnu.org/licenses/gpl-2.0.html)
 
-**A lightweight TGMPA alternative for WordPress themes.**
+**Minimal plugin dependency manager for WordPress themes.**
 
-Simple. Modern. Dependency-free.
+A simple, modern library for requiring plugins in WordPress themes. Single file, zero dependencies, built on native WordPress APIs.
 
-## Benchmark
+## Design Philosophy
 
-```
-TGMPA:                    ~4000+ lines
-Polanger Required Plugins:  ~500 lines
+This library intentionally avoids unnecessary abstraction layers. If WordPress core already provides a solution, Polanger Required Plugins uses it directly.
 
-Result: ~87% less code
-```
-
-## Why?
-
-TGMPA has been the standard solution for requiring plugins in WordPress themes for many years. However, the project has grown large and complex over time.
-
-Polanger Required Plugins focuses on a simpler approach: a modern, minimal library that solves the same problem using WordPress core APIs.
-
-| Feature | TGMPA | Polanger |
-|---------|-------|----------|
-| Code Size | 4000+ lines | **~500 lines** |
-| Files | Multiple | **Single file** |
-| Dependencies | Many | **Zero** |
-| PHP Support | 5.2+ | **7.4+** |
-| WordPress | 3.0+ | **6.0+** |
-| Maintenance | Low activity | **Active** |
+**Design Goals:**
+- Minimal codebase (~800 lines)
+- Single-file distribution
+- No external dependencies
+- Native WordPress APIs (Plugin_Upgrader, plugins_api)
+- Modern PHP compatibility (7.4+)
+- Modern WordPress compatibility (6.0+)
 
 ## Installation
 
@@ -116,16 +104,18 @@ After activating the theme, WordPress will show a notice asking the user to inst
 
 ## Features
 
-- **Single file library** - Just one PHP file
-- **~500 lines of code** - Minimal, readable
-- **Zero dependencies** - No external libraries
-- **Uses WordPress core installer** - Native Plugin_Upgrader API
+- **Single file library** - Just one PHP file (~800 lines)
+- **Queue-based bulk installer** - No timeout issues, each plugin is a separate request
+- **Selective installation** - Choose specific plugins with checkboxes
+- **Native WordPress update integration** - Version-based update detection
 - **WordPress.org plugin support** - Install from repository
 - **Bundled plugin support** - Install from theme ZIP files
 - **Automatic activation** - Plugins activate after install
 - **Native WordPress admin UI** - Uses WP admin table styling
 - **Required and recommended** - Distinguish plugin importance
 - **Smart admin notice** - Required can't be dismissed, recommended can
+- **Performance optimized** - Cached get_plugins() calls
+- **Zero dependencies** - No external libraries
 
 ## Requirements
 
@@ -142,13 +132,24 @@ GPL-2.0-or-later
 
 Created by [Polanger](https://polanger.com).
 
-Inspired by the long-standing TGMPA library, but redesigned with a modern, minimal architecture.
+Inspired by the long-standing [TGM Plugin Activation](http://tgmpluginactivation.com/) library, which has served the WordPress ecosystem well for many years.
 
 ---
 
 If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
+
+### 3.0.0
+- **Plugin update system** - Version-based update detection
+- **Update button** - One-click plugin updates
+- **Performance optimization** - Cached get_plugins() calls
+- **Selective installation** - Install only selected plugins with checkboxes
+
+### 2.0.0
+- **Bulk installation** - "Install All" button with queue-based processing
+- No JavaScript required for bulk install
+- No timeout issues - each plugin is a separate request
 
 ### 1.0.0
 - Initial release
