@@ -1,4 +1,4 @@
-# Polanger Required Plugins
+# Polanger Required Plugins (Polanger RP)
 
 [![WordPress](https://img.shields.io/badge/WordPress-6.0%2B-blue.svg)](https://wordpress.org/)
 [![PHP](https://img.shields.io/badge/PHP-7.4%2B-purple.svg)](https://php.net/)
@@ -127,6 +127,11 @@ Designed for modern WordPress themes.
 ## License
 
 GPL-2.0-or-later
+
+## Links
+
+- **Official Page:** [polanger.com/polanger-required-plugins-polanger-rp](https://polanger.com/polanger-required-plugins-polanger-rp/)
+- **GitHub:** [github.com/Polanger/required-plugins](https://github.com/Polanger/required-plugins)
 
 ## Credits
 

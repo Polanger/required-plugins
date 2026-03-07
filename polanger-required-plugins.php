@@ -1,15 +1,15 @@
 <?php
 /**
- * Polanger Required Plugins
+ * Polanger Required Plugins (Polanger RP)
  *
  * A minimal, modern library for WordPress theme developers to require plugins.
- * Clean replacement for TGMPA in ~350 lines.
+ * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
  * @version 3.0.0
  * @author  Polanger
  * @license GPL-2.0-or-later
- * @link    https://github.com/polanger/required-plugins
+ * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
  */
 
 // Prevent direct access.
@@ -490,7 +490,14 @@ class Polanger_Required_Plugins {
                         </tr>
                     </thead>
                     <tbody>
-                        <?php foreach ( $this->plugins as $plugin ) : 
+                        <?php 
+                        // Sort plugins: Required first, then Recommended.
+                        $sorted_plugins = $this->plugins;
+                        uasort( $sorted_plugins, function( $a, $b ) {
+                            return $b['required'] <=> $a['required'];
+                        } );
+                        
+                        foreach ( $sorted_plugins as $plugin ) : 
                             $status = $this->get_status( $plugin );
                             $name   = $this->get_name( $plugin );
                             $is_actionable = $status !== 'active';
