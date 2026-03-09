@@ -6,7 +6,7 @@
  * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
- * @version 3.0.0
+ * @version 3.1.0
  * @author  Polanger
  * @license GPL-2.0-or-later
  * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
@@ -448,6 +448,26 @@ class Polanger_Required_Plugins {
             </div>
             <?php endif; ?>
 
+            <?php
+            // Display error message if action failed.
+            if ( ! empty( $_GET['prp_error'] ) ) :
+                $error_type = sanitize_key( $_GET['prp_error'] );
+                $error_plugin = isset( $_GET['prp_plugin'] ) ? sanitize_key( $_GET['prp_plugin'] ) : '';
+                $error_messages = array(
+                    'install_failed'  => __( 'Plugin installation failed.', 'polanger-required-plugins' ),
+                    'activate_failed' => __( 'Plugin activation failed.', 'polanger-required-plugins' ),
+                    'update_failed'   => __( 'Plugin update failed.', 'polanger-required-plugins' ),
+                );
+                $error_text = $error_messages[ $error_type ] ?? __( 'An error occurred.', 'polanger-required-plugins' );
+                if ( $error_plugin && isset( $this->plugins[ $error_plugin ] ) ) {
+                    $error_text .= ' (' . esc_html( $this->plugins[ $error_plugin ]['name'] ) . ')';
+                }
+            ?>
+            <div class="notice notice-error inline">
+                <p><strong><?php echo esc_html( $error_text ); ?></strong></p>
+            </div>
+            <?php endif; ?>
+
             <form method="post" action="<?php echo esc_url( $form_action ); ?>">
                 <?php wp_nonce_field( 'polanger_bulk_install', '_wpnonce' ); ?>
                 <input type="hidden" name="polanger_bulk_action" value="install_selected">
@@ -635,6 +655,15 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function handle_actions() {
+        // Only run on our plugin page to avoid conflicts with other admin pages.
+        $screen = get_current_screen();
+        if ( $screen && $screen->id !== 'appearance_page_' . $this->config['menu_slug'] ) {
+            // Allow queue processing on any page (redirect chain).
+            if ( empty( $_GET['queue'] ) && empty( $_GET['action'] ) && empty( $_POST['polanger_bulk_action'] ) ) {
+                return;
+            }
+        }
+
         // Handle queue-based bulk installation (GET).
         if ( ! empty( $_GET['queue'] ) ) {
             $this->handle_queue();
@@ -676,16 +705,33 @@ class Polanger_Required_Plugins {
 
         $plugin = $this->plugins[ $slug ];
 
+        $result = false;
+        $error_message = '';
+
         if ( $action === 'install' ) {
-            $this->install_plugin( $plugin );
+            $result = $this->install_plugin( $plugin );
+            if ( ! $result ) {
+                $error_message = 'install_failed';
+            }
         } elseif ( $action === 'activate' ) {
-            $this->activate_plugin( $plugin );
+            $result = $this->activate_plugin( $plugin );
+            if ( ! $result ) {
+                $error_message = 'activate_failed';
+            }
         } elseif ( $action === 'update' ) {
-            $this->update_plugin( $plugin );
+            $result = $this->update_plugin( $plugin );
+            if ( ! $result ) {
+                $error_message = 'update_failed';
+            }
         }
 
-        // Redirect back.
-        wp_safe_redirect( admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] ) );
+        // Redirect back with error message if failed.
+        $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+        if ( ! empty( $error_message ) ) {
+            $redirect_url = add_query_arg( 'prp_error', $error_message, $redirect_url );
+            $redirect_url = add_query_arg( 'prp_plugin', $slug, $redirect_url );
+        }
+        wp_safe_redirect( $redirect_url );
         exit;
     }
 
@@ -880,13 +926,33 @@ class Polanger_Required_Plugins {
             }
             $result = $upgrader->upgrade( $file );
         } else {
-            // Bundled plugin - reinstall from source.
+            // Bundled plugin - delete existing and reinstall from source.
             $source = $plugin['source'];
             if ( ! file_exists( $source ) ) {
                 return false;
             }
-            // Delete existing and reinstall.
-            $result = $upgrader->install( $source, array( 'overwrite_package' => true ) );
+
+            // Delete existing plugin first to allow reinstall.
+            $file = $this->get_plugin_file( $plugin['slug'] );
+            if ( $file ) {
+                // Deactivate before deletion.
+                deactivate_plugins( $file, true );
+                // Delete the plugin.
+                delete_plugins( array( $file ) );
+                $this->clear_plugins_cache();
+            }
+
+            // Install fresh from source.
+            $result = $upgrader->install( $source );
+
+            // Re-activate after install.
+            if ( $result ) {
+                $this->clear_plugins_cache();
+                $new_file = $this->get_plugin_file( $plugin['slug'] );
+                if ( $new_file ) {
+                    activate_plugin( $new_file );
+                }
+            }
         }
 
         if ( $result ) {
@@ -899,6 +965,7 @@ class Polanger_Required_Plugins {
     /**
      * Inject plugin update information into WordPress update transient.
      * This enables native WordPress update notifications for bundled plugins.
+     * Note: Only bundled plugins are injected. WordPress.org plugins are handled by WP core.
      *
      * @param object $transient Update transient object.
      * @return object Modified transient.
@@ -911,6 +978,12 @@ class Polanger_Required_Plugins {
         foreach ( $this->plugins as $plugin ) {
             // Skip plugins without version requirement.
             if ( empty( $plugin['version'] ) ) {
+                continue;
+            }
+
+            // Skip WordPress.org plugins - they are handled by WP core update system.
+            // Only inject bundled plugins that have a local source file.
+            if ( $plugin['source'] === 'wordpress' ) {
                 continue;
             }
 
@@ -934,10 +1007,8 @@ class Polanger_Required_Plugins {
                 $update->slug        = $plugin['slug'];
                 $update->plugin      = $file;
                 $update->new_version = $plugin['version'];
-                $update->package     = $plugin['source'] === 'wordpress' ? '' : $plugin['source'];
-                $update->url         = $plugin['source'] === 'wordpress' 
-                    ? 'https://wordpress.org/plugins/' . $plugin['slug'] . '/'
-                    : '';
+                $update->package     = $plugin['source']; // Bundled source path.
+                $update->url         = '';
 
                 $transient->response[ $file ] = $update;
             }

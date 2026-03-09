@@ -145,6 +145,12 @@ If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
 
+### 3.1.0
+- **Screen scope control** - Actions only run on plugin page, preventing conflicts
+- **Error handling** - User-friendly error messages for failed install/update/activate
+- **Bundled update fix** - Proper delete+reinstall for bundled plugin updates
+- **Update transient fix** - Only bundled plugins injected, WP.org handled by core
+
 ### 3.0.0
 - **Plugin update system** - Version-based update detection
 - **Update button** - One-click plugin updates
