@@ -145,10 +145,13 @@ If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
 
-### 3.2.0
+### 3.3.0
+- **TextDomain matching** - get_plugin_file() now matches by TextDomain for edge cases
+- **Strict page scope** - handle_actions() only runs on plugin page, preventing all conflicts
+- **URL cleanup** - prp_failed/prp_error params cleaned via history.replaceState after display
+- **Native update prevention** - Bundled plugins added to no_update list (WP update button won't appear)
 - **Queue error tracking** - Failed plugins tracked and displayed after bulk operations
 - **Config protection** - Multiple register() calls no longer override config
-- **CSP compatibility** - Inline JS moved to wp_add_inline_script
 - **Safer bundled updates** - Added is_readable() check before delete+reinstall
 - **Better error messages** - Uses get_name() for consistent plugin name display
 

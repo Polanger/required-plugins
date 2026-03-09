@@ -6,7 +6,7 @@
  * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
- * @version 3.2.0
+ * @version 3.3.0
  * @author  Polanger
  * @license GPL-2.0-or-later
  * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
@@ -274,7 +274,14 @@ class Polanger_Required_Plugins {
 
         foreach ( $plugins as $file => $data ) {
             $plugin_dir = dirname( $file );
+
+            // Match by directory name or single-file plugin.
             if ( $plugin_dir === $slug || $file === $slug . '.php' ) {
+                return $file;
+            }
+
+            // Match by TextDomain for plugins with different folder/file names.
+            if ( isset( $data['TextDomain'] ) && $data['TextDomain'] === $slug ) {
                 return $file;
             }
         }
@@ -487,10 +494,13 @@ class Polanger_Required_Plugins {
                         $failed_names[] = $slug;
                     }
                 }
+                // Clean URL to prevent message on refresh.
+                $clean_url = remove_query_arg( array( 'prp_failed', 'prp_error', 'prp_plugin' ) );
             ?>
-            <div class="notice notice-warning inline">
+            <div class="notice notice-warning inline is-dismissible">
                 <p><strong><?php esc_html_e( 'Some plugins failed to install/update:', 'polanger-required-plugins' ); ?></strong> <?php echo esc_html( implode( ', ', $failed_names ) ); ?></p>
             </div>
+            <script>if (history.replaceState) { history.replaceState(null, '', '<?php echo esc_js( $clean_url ); ?>'); }</script>
             <?php endif; ?>
 
             <form method="post" action="<?php echo esc_url( $form_action ); ?>">
@@ -680,15 +690,11 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function handle_actions() {
-        // Only process if we have relevant parameters.
-        // This runs on admin_init (before screen is available) so we check URL params.
+        // Only process on our plugin page to prevent conflicts with other admin pages.
+        // Nonce verification inside each handler provides additional security.
         $is_our_page = isset( $_GET['page'] ) && $_GET['page'] === $this->config['menu_slug'];
-        $has_queue = ! empty( $_GET['queue'] );
-        $has_action = ! empty( $_GET['action'] ) && ! empty( $_GET['plugin'] );
-        $has_bulk = ! empty( $_POST['polanger_bulk_action'] );
 
-        // Only proceed if on our page or has relevant action params.
-        if ( ! $is_our_page && ! $has_queue && ! $has_action && ! $has_bulk ) {
+        if ( ! $is_our_page ) {
             return;
         }
 
@@ -1049,17 +1055,22 @@ class Polanger_Required_Plugins {
 
             // Check if update is needed.
             if ( version_compare( $installed_version, $plugin['version'], '<' ) ) {
-                $update = new \stdClass();
+                // Bundled plugin needs update - but don't add to WP's response.
+                // WP's native update button won't work with local paths.
+                // Instead, mark as "no_update" so WP doesn't show its update UI.
+                // Our own UI handles bundled plugin updates via update_plugin() method.
+                if ( ! isset( $transient->no_update ) ) {
+                    $transient->no_update = array();
+                }
 
-                $update->slug        = $plugin['slug'];
-                $update->plugin      = $file;
-                $update->new_version = $plugin['version'];
-                // Leave package empty - bundled updates are handled by our own update_plugin method.
-                // WordPress native updater cannot use local file paths directly.
-                $update->package     = '';
-                $update->url         = '';
+                $no_update = new \stdClass();
+                $no_update->slug        = $plugin['slug'];
+                $no_update->plugin      = $file;
+                $no_update->new_version = $installed_version;
+                $no_update->package     = '';
+                $no_update->url         = '';
 
-                $transient->response[ $file ] = $update;
+                $transient->no_update[ $file ] = $no_update;
             }
         }
 
