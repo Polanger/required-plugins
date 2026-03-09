@@ -98,7 +98,8 @@ class Polanger_Required_Plugins {
     public function __construct() {
         add_action( 'admin_notices', array( $this, 'admin_notice' ) );
         add_action( 'admin_menu', array( $this, 'admin_menu' ) );
-        add_action( 'current_screen', array( $this, 'handle_actions' ) );
+        // Use admin_init for actions - runs before any output is sent.
+        add_action( 'admin_init', array( $this, 'handle_actions' ) );
         add_action( 'wp_ajax_polanger_dismiss_notice', array( $this, 'ajax_dismiss_notice' ) );
         add_filter( 'pre_set_site_transient_update_plugins', array( $this, 'inject_plugin_updates' ) );
     }
@@ -655,13 +656,16 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function handle_actions() {
-        // Only run on our plugin page to avoid conflicts with other admin pages.
-        $screen = get_current_screen();
-        if ( $screen && $screen->id !== 'appearance_page_' . $this->config['menu_slug'] ) {
-            // Allow queue processing on any page (redirect chain).
-            if ( empty( $_GET['queue'] ) && empty( $_GET['action'] ) && empty( $_POST['polanger_bulk_action'] ) ) {
-                return;
-            }
+        // Only process if we have relevant parameters.
+        // This runs on admin_init (before screen is available) so we check URL params.
+        $is_our_page = isset( $_GET['page'] ) && $_GET['page'] === $this->config['menu_slug'];
+        $has_queue = ! empty( $_GET['queue'] );
+        $has_action = ! empty( $_GET['action'] ) && ! empty( $_GET['plugin'] );
+        $has_bulk = ! empty( $_POST['polanger_bulk_action'] );
+
+        // Only proceed if on our page or has relevant action params.
+        if ( ! $is_our_page && ! $has_queue && ! $has_action && ! $has_bulk ) {
+            return;
         }
 
         // Handle queue-based bulk installation (GET).
