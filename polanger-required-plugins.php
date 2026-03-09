@@ -6,7 +6,7 @@
  * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
- * @version 3.1.0
+ * @version 3.2.0
  * @author  Polanger
  * @license GPL-2.0-or-later
  * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
@@ -131,13 +131,16 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function register( array $plugins, array $config = array() ) {
-        $this->config = wp_parse_args( $config, array(
-            'id'          => 'polanger',
-            'menu_title'  => __( 'Install Plugins', 'polanger-required-plugins' ),
-            'menu_slug'   => 'polanger-install-plugins',
-            'parent_slug' => 'themes.php',
-            'capability'  => 'install_plugins',
-        ) );
+        // Only set config once to prevent override on multiple calls.
+        if ( empty( $this->config ) ) {
+            $this->config = wp_parse_args( $config, array(
+                'id'          => 'polanger',
+                'menu_title'  => __( 'Install Plugins', 'polanger-required-plugins' ),
+                'menu_slug'   => 'polanger-install-plugins',
+                'parent_slug' => 'themes.php',
+                'capability'  => 'install_plugins',
+            ) );
+        }
 
         foreach ( $plugins as $plugin ) {
             $normalized = $this->normalize( $plugin );
@@ -388,6 +391,7 @@ class Polanger_Required_Plugins {
 
     /**
      * Output dismiss notice script.
+     * Uses wp_add_inline_script for CSP compatibility.
      *
      * @return void
      */
@@ -397,20 +401,22 @@ class Polanger_Required_Plugins {
             return;
         }
         $script_added = true;
-        ?>
-        <script>
-        jQuery(function($) {
-            $(document).on('click', '.notice[data-polanger-dismiss] .notice-dismiss', function() {
-                var id = $(this).closest('.notice').data('polanger-dismiss');
-                $.post(ajaxurl, {
-                    action: 'polanger_dismiss_notice',
-                    id: id,
-                    _wpnonce: '<?php echo esc_js( wp_create_nonce( 'polanger_dismiss_notice' ) ); ?>'
+
+        // Enqueue inline script attached to jQuery for CSP compatibility.
+        $nonce = wp_create_nonce( 'polanger_dismiss_notice' );
+        $script = "
+            jQuery(function($) {
+                $(document).on('click', '.notice[data-polanger-dismiss] .notice-dismiss', function() {
+                    var id = $(this).closest('.notice').data('polanger-dismiss');
+                    $.post(ajaxurl, {
+                        action: 'polanger_dismiss_notice',
+                        id: id,
+                        _wpnonce: '" . esc_js( $nonce ) . "'
+                    });
                 });
             });
-        });
-        </script>
-        <?php
+        ";
+        wp_add_inline_script( 'jquery', $script );
     }
 
     /**
@@ -461,11 +467,29 @@ class Polanger_Required_Plugins {
                 );
                 $error_text = $error_messages[ $error_type ] ?? __( 'An error occurred.', 'polanger-required-plugins' );
                 if ( $error_plugin && isset( $this->plugins[ $error_plugin ] ) ) {
-                    $error_text .= ' (' . esc_html( $this->plugins[ $error_plugin ]['name'] ) . ')';
+                    $error_text .= ' (' . esc_html( $this->get_name( $this->plugins[ $error_plugin ] ) ) . ')';
                 }
             ?>
             <div class="notice notice-error inline">
                 <p><strong><?php echo esc_html( $error_text ); ?></strong></p>
+            </div>
+            <?php endif; ?>
+
+            <?php
+            // Display bulk operation failed plugins.
+            if ( ! empty( $_GET['prp_failed'] ) ) :
+                $failed_slugs = array_filter( array_map( 'sanitize_key', explode( ',', $_GET['prp_failed'] ) ) );
+                $failed_names = array();
+                foreach ( $failed_slugs as $slug ) {
+                    if ( isset( $this->plugins[ $slug ] ) ) {
+                        $failed_names[] = $this->get_name( $this->plugins[ $slug ] );
+                    } else {
+                        $failed_names[] = $slug;
+                    }
+                }
+            ?>
+            <div class="notice notice-warning inline">
+                <p><strong><?php esc_html_e( 'Some plugins failed to install/update:', 'polanger-required-plugins' ); ?></strong> <?php echo esc_html( implode( ', ', $failed_names ) ); ?></p>
             </div>
             <?php endif; ?>
 
@@ -793,16 +817,23 @@ class Polanger_Required_Plugins {
             wp_die( __( 'You do not have permission to perform this action.', 'polanger-required-plugins' ) );
         }
 
-        // Parse queue.
+        // Parse queue and failed plugins list.
         $queue = array_filter( array_map( 'sanitize_key', explode( ',', $_GET['queue'] ) ) );
+        $failed = isset( $_GET['prp_failed'] ) ? array_filter( array_map( 'sanitize_key', explode( ',', $_GET['prp_failed'] ) ) ) : array();
 
         if ( empty( $queue ) ) {
-            wp_safe_redirect( admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] ) );
+            // Queue complete - redirect with failed plugins if any.
+            $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+            if ( ! empty( $failed ) ) {
+                $redirect_url = add_query_arg( 'prp_failed', implode( ',', $failed ), $redirect_url );
+            }
+            wp_safe_redirect( $redirect_url );
             exit;
         }
 
         // Get current plugin to process.
         $current_slug = array_shift( $queue );
+        $result = true;
 
         // Find plugin config.
         if ( isset( $this->plugins[ $current_slug ] ) ) {
@@ -811,26 +842,38 @@ class Polanger_Required_Plugins {
 
             // Install if not installed.
             if ( $status === 'not_installed' ) {
-                $this->install_plugin( $plugin );
+                $result = $this->install_plugin( $plugin );
             } elseif ( $status === 'needs_update' ) {
                 // Update if needs update.
-                $this->update_plugin( $plugin );
+                $result = $this->update_plugin( $plugin );
             } elseif ( $status === 'inactive' ) {
                 // Activate if installed but inactive.
-                $this->activate_plugin( $plugin );
+                $result = $this->activate_plugin( $plugin );
+            }
+
+            // Track failed plugins.
+            if ( ! $result ) {
+                $failed[] = $current_slug;
             }
         }
 
         // Build redirect URL.
         $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
 
-        // If more plugins in queue, continue processing.
+        // Continue with remaining queue.
+        $redirect_args = array(
+            '_wpnonce' => wp_create_nonce( 'polanger_bulk_install' ),
+        );
+
         if ( ! empty( $queue ) ) {
-            $redirect_url = add_query_arg( array(
-                'queue'    => implode( ',', $queue ),
-                '_wpnonce' => wp_create_nonce( 'polanger_bulk_install' ),
-            ), $redirect_url );
+            $redirect_args['queue'] = implode( ',', $queue );
         }
+
+        if ( ! empty( $failed ) ) {
+            $redirect_args['prp_failed'] = implode( ',', $failed );
+        }
+
+        $redirect_url = add_query_arg( $redirect_args, $redirect_url );
 
         wp_safe_redirect( $redirect_url );
         exit;
@@ -932,7 +975,7 @@ class Polanger_Required_Plugins {
         } else {
             // Bundled plugin - delete existing and reinstall from source.
             $source = $plugin['source'];
-            if ( ! file_exists( $source ) ) {
+            if ( ! file_exists( $source ) || ! is_readable( $source ) ) {
                 return false;
             }
 
@@ -1011,7 +1054,9 @@ class Polanger_Required_Plugins {
                 $update->slug        = $plugin['slug'];
                 $update->plugin      = $file;
                 $update->new_version = $plugin['version'];
-                $update->package     = $plugin['source']; // Bundled source path.
+                // Leave package empty - bundled updates are handled by our own update_plugin method.
+                // WordPress native updater cannot use local file paths directly.
+                $update->package     = '';
                 $update->url         = '';
 
                 $transient->response[ $file ] = $update;

@@ -145,6 +145,13 @@ If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
 
+### 3.2.0
+- **Queue error tracking** - Failed plugins tracked and displayed after bulk operations
+- **Config protection** - Multiple register() calls no longer override config
+- **CSP compatibility** - Inline JS moved to wp_add_inline_script
+- **Safer bundled updates** - Added is_readable() check before delete+reinstall
+- **Better error messages** - Uses get_name() for consistent plugin name display
+
 ### 3.1.0
 - **Screen scope control** - Actions only run on plugin page, preventing conflicts
 - **Error handling** - User-friendly error messages for failed install/update/activate
