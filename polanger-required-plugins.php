@@ -6,7 +6,7 @@
  * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
- * @version 3.3.0
+ * @version 4.1.0
  * @author  Polanger
  * @license GPL-2.0-or-later
  * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
@@ -27,6 +27,7 @@ if ( ! function_exists( 'polanger_require_plugins' ) ) {
  *   polanger_require_plugins([
  *       'woocommerce',
  *       ['slug' => 'theme-core', 'source' => '/path/to/theme-core.zip'],
+ *       ['slug' => 'pro-addon', 'source' => 'https://cdn.example.com/pro-addon.zip'],
  *   ]);
  *
  * @param array $plugins Array of plugin slugs or plugin config arrays.
@@ -134,11 +135,12 @@ class Polanger_Required_Plugins {
         // Only set config once to prevent override on multiple calls.
         if ( empty( $this->config ) ) {
             $this->config = wp_parse_args( $config, array(
-                'id'          => 'polanger',
-                'menu_title'  => __( 'Install Plugins', 'polanger-required-plugins' ),
-                'menu_slug'   => 'polanger-install-plugins',
-                'parent_slug' => 'themes.php',
-                'capability'  => 'install_plugins',
+                'id'              => 'polanger',
+                'menu_title'      => __( 'Install Plugins', 'polanger-required-plugins' ),
+                'menu_slug'       => 'polanger-install-plugins',
+                'parent_slug'     => 'themes.php',
+                'capability'      => 'install_plugins',
+                'allowed_domains' => array(), // Whitelist for external sources (e.g. ['cdn.example.com'])
             ) );
         }
 
@@ -303,6 +305,133 @@ class Polanger_Required_Plugins {
     }
 
     /**
+     * Check if source is an external URL.
+     *
+     * @param string $source Plugin source.
+     * @return bool True if external URL.
+     */
+    private function is_external_source( $source ) {
+        return filter_var( $source, FILTER_VALIDATE_URL ) !== false;
+    }
+
+    /**
+     * Validate external source URL for security.
+     *
+     * @param string $url External URL.
+     * @return true|WP_Error True if valid, WP_Error if not.
+     */
+    private function validate_external_source( $url ) {
+        // 1. HTTPS required.
+        if ( strpos( $url, 'https://' ) !== 0 ) {
+            return new \WP_Error( 'invalid_protocol', __( 'External sources must use HTTPS.', 'polanger-required-plugins' ) );
+        }
+
+        // 2. Must be .zip file.
+        $path = parse_url( $url, PHP_URL_PATH );
+        if ( ! $path || ! preg_match( '/\.zip$/i', $path ) ) {
+            return new \WP_Error( 'invalid_extension', __( 'External source must be a .zip file.', 'polanger-required-plugins' ) );
+        }
+
+        // 3. Domain whitelist (if configured).
+        if ( ! empty( $this->config['allowed_domains'] ) ) {
+            $host = parse_url( $url, PHP_URL_HOST );
+            if ( ! in_array( $host, $this->config['allowed_domains'], true ) ) {
+                return new \WP_Error( 'invalid_domain', __( 'External source domain is not allowed.', 'polanger-required-plugins' ) );
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Get source type label for display.
+     *
+     * @param array $plugin Plugin config.
+     * @return string Source label.
+     */
+    private function get_source_label( array $plugin ) {
+        if ( $plugin['source'] === 'wordpress' ) {
+            return 'WordPress.org';
+        }
+
+        if ( $plugin['source'] === 'license' ) {
+            return __( 'License', 'polanger-required-plugins' );
+        }
+
+        if ( $this->is_external_source( $plugin['source'] ) ) {
+            return __( 'External', 'polanger-required-plugins' );
+        }
+
+        return __( 'Bundled', 'polanger-required-plugins' );
+    }
+
+    /**
+     * Resolve download URL for a plugin.
+     * This is the central source resolver - installer doesn't need to know where URL comes from.
+     *
+     * Supported sources:
+     * - 'wordpress' : WordPress.org plugin repository
+     * - 'license'   : License-protected download (requires polanger_license_download_url filter)
+     * - URL string  : External HTTPS URL (validated for security)
+     * - File path   : Local bundled ZIP file
+     *
+     * @param array $plugin Plugin config.
+     * @return string|WP_Error Download URL or WP_Error on failure.
+     */
+    private function resolve_download_url( array $plugin ) {
+        $source = $plugin['source'];
+
+        // WordPress.org - get download link from API.
+        if ( $source === 'wordpress' ) {
+            require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
+            $api = plugins_api( 'plugin_information', array( 'slug' => $plugin['slug'] ) );
+            if ( is_wp_error( $api ) ) {
+                return new \WP_Error( 'wporg_api_failed', __( 'WordPress.org API request failed.', 'polanger-required-plugins' ) );
+            }
+            return $api->download_link;
+        }
+
+        // License-protected source - developer provides URL via filter.
+        if ( $source === 'license' ) {
+            /**
+             * Filter to get download URL for license-protected plugins.
+             * Developers can hook into this to integrate their own license system.
+             *
+             * @param string|null $url    Download URL (null by default).
+             * @param array       $plugin Plugin configuration array.
+             * @return string|WP_Error Download URL or WP_Error.
+             */
+            $url = apply_filters( 'polanger_license_download_url', null, $plugin );
+
+            if ( is_wp_error( $url ) ) {
+                return $url;
+            }
+
+            if ( empty( $url ) ) {
+                return new \WP_Error( 'license_not_configured', __( 'License download handler not configured. Add a polanger_license_download_url filter.', 'polanger-required-plugins' ) );
+            }
+
+            return $url;
+        }
+
+        // External URL - validate security first.
+        if ( $this->is_external_source( $source ) ) {
+            $validation = $this->validate_external_source( $source );
+            if ( is_wp_error( $validation ) ) {
+                return $validation;
+            }
+            return $source;
+        }
+
+        // Bundled - local file path.
+        if ( ! file_exists( $source ) ) {
+            return new \WP_Error( 'source_not_found', __( 'Plugin source file not found.', 'polanger-required-plugins' ) );
+        }
+
+        return $source;
+    }
+
+    /**
      * Get incomplete plugins.
      *
      * @return array Plugins that need action.
@@ -323,20 +452,38 @@ class Polanger_Required_Plugins {
             return;
         }
 
-        $incomplete = $this->get_incomplete();
-        if ( empty( $incomplete ) ) {
+        // Categorize plugins by status.
+        $not_installed = array();
+        $needs_update = array();
+        $inactive = array();
+
+        foreach ( $this->plugins as $plugin ) {
+            $status = $this->get_status( $plugin );
+            if ( $status === 'not_installed' ) {
+                $not_installed[] = $plugin;
+            } elseif ( $status === 'needs_update' ) {
+                $needs_update[] = $plugin;
+            } elseif ( $status === 'inactive' ) {
+                $inactive[] = $plugin;
+            }
+        }
+
+        // Separate by required/recommended for not_installed and inactive only.
+        // needs_update plugins are already installed, so they're less critical.
+        $required_missing = array_filter( array_merge( $not_installed, $inactive ), function( $p ) { return $p['required']; } );
+        $recommended_missing = array_filter( array_merge( $not_installed, $inactive ), function( $p ) { return ! $p['required']; } );
+
+        $has_required_missing = ! empty( $required_missing );
+        $has_recommended_missing = ! empty( $recommended_missing );
+        $has_updates = ! empty( $needs_update );
+
+        // Nothing to show.
+        if ( ! $has_required_missing && ! $has_recommended_missing && ! $has_updates ) {
             return;
         }
 
-        // Separate required and recommended plugins.
-        $required_incomplete = array_filter( $incomplete, function( $p ) { return $p['required']; } );
-        $recommended_incomplete = array_filter( $incomplete, function( $p ) { return ! $p['required']; } );
-
-        $has_required = ! empty( $required_incomplete );
-        $has_recommended = ! empty( $recommended_incomplete );
-
-        // If only recommended plugins are incomplete, check if dismissed.
-        if ( ! $has_required ) {
+        // Check if dismissed (only applies when no required missing and no updates).
+        if ( ! $has_required_missing && ! $has_updates ) {
             $dismissed = get_user_meta( get_current_user_id(), 'polanger_dismissed_' . $this->config['id'], true );
             if ( $dismissed ) {
                 return;
@@ -348,8 +495,8 @@ class Polanger_Required_Plugins {
         // Build message parts.
         $message_parts = array();
 
-        if ( $has_required ) {
-            $required_names = array_map( array( $this, 'get_name' ), $required_incomplete );
+        if ( $has_required_missing ) {
+            $required_names = array_map( array( $this, 'get_name' ), $required_missing );
             $message_parts[] = sprintf(
                 '<strong>%s</strong> %s',
                 esc_html__( 'Required:', 'polanger-required-plugins' ),
@@ -357,8 +504,8 @@ class Polanger_Required_Plugins {
             );
         }
 
-        if ( $has_recommended ) {
-            $recommended_names = array_map( array( $this, 'get_name' ), $recommended_incomplete );
+        if ( $has_recommended_missing ) {
+            $recommended_names = array_map( array( $this, 'get_name' ), $recommended_missing );
             $message_parts[] = sprintf(
                 '<strong>%s</strong> %s',
                 esc_html__( 'Recommended:', 'polanger-required-plugins' ),
@@ -366,18 +513,34 @@ class Polanger_Required_Plugins {
             );
         }
 
-        // Determine notice type and dismissibility.
-        if ( $has_required ) {
+        if ( $has_updates ) {
+            $update_names = array_map( array( $this, 'get_name' ), $needs_update );
+            $message_parts[] = sprintf(
+                '<strong>%s</strong> %s',
+                esc_html__( 'Updates available:', 'polanger-required-plugins' ),
+                esc_html( implode( ', ', $update_names ) )
+            );
+        }
+
+        // Determine notice type, intro text, and dismissibility.
+        if ( $has_required_missing ) {
+            // Required plugins missing - warning, not dismissible.
             $class       = 'notice-warning';
             $dismissible = '';
             $intro       = __( 'This theme needs the following plugins:', 'polanger-required-plugins' );
-        } else {
+            $button_text = __( 'Install Plugins', 'polanger-required-plugins' );
+        } elseif ( $has_updates && ! $has_recommended_missing ) {
+            // Only updates available - info, dismissible.
             $class       = 'notice-info is-dismissible';
-            $dismissible = sprintf(
-                ' data-polanger-dismiss="%s"',
-                esc_attr( $this->config['id'] )
-            );
+            $dismissible = sprintf( ' data-polanger-dismiss="%s"', esc_attr( $this->config['id'] ) );
+            $intro       = __( 'Plugin updates are available:', 'polanger-required-plugins' );
+            $button_text = __( 'View Updates', 'polanger-required-plugins' );
+        } else {
+            // Recommended plugins or mix - info, dismissible.
+            $class       = 'notice-info is-dismissible';
+            $dismissible = sprintf( ' data-polanger-dismiss="%s"', esc_attr( $this->config['id'] ) );
             $intro       = __( 'This theme recommends the following plugins:', 'polanger-required-plugins' );
+            $button_text = __( 'Install Plugins', 'polanger-required-plugins' );
         }
 
         printf(
@@ -387,11 +550,11 @@ class Polanger_Required_Plugins {
             esc_html( $intro ),
             implode( ' &nbsp;|&nbsp; ', $message_parts ),
             esc_url( $url ),
-            esc_html__( 'Install Plugins', 'polanger-required-plugins' )
+            esc_html( $button_text )
         );
 
         // Add dismiss script only if dismissible.
-        if ( ! $has_required ) {
+        if ( ! $has_required_missing ) {
             $this->dismiss_notice_script();
         }
     }
@@ -465,20 +628,34 @@ class Polanger_Required_Plugins {
             <?php
             // Display error message if action failed.
             if ( ! empty( $_GET['prp_error'] ) ) :
-                $error_type = sanitize_key( $_GET['prp_error'] );
+                $error_code = sanitize_key( $_GET['prp_error'] );
                 $error_plugin = isset( $_GET['prp_plugin'] ) ? sanitize_key( $_GET['prp_plugin'] ) : '';
+                $plugin_name = ( $error_plugin && isset( $this->plugins[ $error_plugin ] ) ) 
+                    ? $this->get_name( $this->plugins[ $error_plugin ] ) 
+                    : $error_plugin;
+
+                // Detailed error messages for developers.
                 $error_messages = array(
-                    'install_failed'  => __( 'Plugin installation failed.', 'polanger-required-plugins' ),
-                    'activate_failed' => __( 'Plugin activation failed.', 'polanger-required-plugins' ),
-                    'update_failed'   => __( 'Plugin update failed.', 'polanger-required-plugins' ),
+                    // General errors
+                    'install_failed'        => __( 'Plugin installation failed. The download or extraction may have failed.', 'polanger-required-plugins' ),
+                    'activate_failed'       => __( 'Plugin activation failed. The plugin may have errors or conflicts.', 'polanger-required-plugins' ),
+                    'deactivate_failed'     => __( 'Plugin deactivation failed.', 'polanger-required-plugins' ),
+                    'update_failed'         => __( 'Plugin update failed. The download or extraction may have failed.', 'polanger-required-plugins' ),
+                    'plugin_not_found'      => __( 'Plugin not found. It may have been deleted or moved.', 'polanger-required-plugins' ),
+                    'source_not_found'      => __( 'Plugin source file not found. Check the file path in your theme configuration.', 'polanger-required-plugins' ),
+                    'wporg_api_failed'      => __( 'WordPress.org API request failed. The plugin slug may be incorrect or the API is unavailable.', 'polanger-required-plugins' ),
+                    // External source security errors
+                    'invalid_protocol'      => __( 'External source must use HTTPS. HTTP is not allowed for security reasons.', 'polanger-required-plugins' ),
+                    'invalid_extension'     => __( 'External source must be a .zip file.', 'polanger-required-plugins' ),
+                    'invalid_domain'        => __( 'External source domain is not in the allowed_domains whitelist. Add the domain to your theme configuration.', 'polanger-required-plugins' ),
+                    // License source errors
+                    'license_not_configured' => __( 'License download handler not configured. Add a polanger_license_download_url filter in your theme.', 'polanger-required-plugins' ),
                 );
-                $error_text = $error_messages[ $error_type ] ?? __( 'An error occurred.', 'polanger-required-plugins' );
-                if ( $error_plugin && isset( $this->plugins[ $error_plugin ] ) ) {
-                    $error_text .= ' (' . esc_html( $this->get_name( $this->plugins[ $error_plugin ] ) ) . ')';
-                }
+                $error_text = $error_messages[ $error_code ] ?? __( 'An unknown error occurred.', 'polanger-required-plugins' );
             ?>
             <div class="notice notice-error inline">
-                <p><strong><?php echo esc_html( $error_text ); ?></strong></p>
+                <p><strong><?php echo esc_html( $plugin_name ); ?>:</strong> <?php echo esc_html( $error_text ); ?></p>
+                <p><small><?php printf( esc_html__( 'Error code: %s', 'polanger-required-plugins' ), '<code>' . esc_html( $error_code ) . '</code>' ); ?></small></p>
             </div>
             <?php endif; ?>
 
@@ -566,7 +743,7 @@ class Polanger_Required_Plugins {
                             </th>
                             <?php endif; ?>
                             <td><strong><?php echo esc_html( $name ); ?></strong></td>
-                            <td><?php echo $plugin['source'] === 'wordpress' ? 'WordPress.org' : esc_html__( 'Bundled', 'polanger-required-plugins' ); ?></td>
+                            <td><?php echo esc_html( $this->get_source_label( $plugin ) ); ?></td>
                             <td><?php echo $plugin['required'] ? esc_html__( 'Required', 'polanger-required-plugins' ) : esc_html__( 'Recommended', 'polanger-required-plugins' ); ?></td>
                             <td>
                                 <?php if ( $status === 'active' ) : ?>
@@ -640,48 +817,93 @@ class Polanger_Required_Plugins {
         $slug = $plugin['slug'];
         $nonce = wp_create_nonce( 'polanger_action_' . $slug );
         $base_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+        $links = array();
 
         switch ( $status ) {
             case 'active':
-                return '<span class="dashicons dashicons-yes-alt" style="color: #00a32a;"></span>';
+                // Deactivate link for active plugins.
+                $deactivate_url = add_query_arg( array(
+                    'action'   => 'deactivate',
+                    'plugin'   => $slug,
+                    '_wpnonce' => $nonce,
+                ), $base_url );
+                $links[] = sprintf(
+                    '<a href="%s" class="button">%s</a>',
+                    esc_url( $deactivate_url ),
+                    esc_html__( 'Deactivate', 'polanger-required-plugins' )
+                );
+                break;
 
             case 'needs_update':
-                $url = add_query_arg( array(
-                    'action' => 'update',
-                    'plugin' => $slug,
+                // Update button (primary).
+                $update_url = add_query_arg( array(
+                    'action'   => 'update',
+                    'plugin'   => $slug,
                     '_wpnonce' => $nonce,
                 ), $base_url );
-                return sprintf(
+                $links[] = sprintf(
                     '<a href="%s" class="button button-primary">%s</a>',
-                    esc_url( $url ),
+                    esc_url( $update_url ),
                     esc_html__( 'Update', 'polanger-required-plugins' )
                 );
+                // Also show activate/deactivate based on current activation state.
+                $file = $this->get_plugin_file( $slug );
+                if ( $file && is_plugin_active( $file ) ) {
+                    $deactivate_url = add_query_arg( array(
+                        'action'   => 'deactivate',
+                        'plugin'   => $slug,
+                        '_wpnonce' => $nonce,
+                    ), $base_url );
+                    $links[] = sprintf(
+                        '<a href="%s" class="button">%s</a>',
+                        esc_url( $deactivate_url ),
+                        esc_html__( 'Deactivate', 'polanger-required-plugins' )
+                    );
+                } else {
+                    $activate_url = add_query_arg( array(
+                        'action'   => 'activate',
+                        'plugin'   => $slug,
+                        '_wpnonce' => $nonce,
+                    ), $base_url );
+                    $links[] = sprintf(
+                        '<a href="%s" class="button">%s</a>',
+                        esc_url( $activate_url ),
+                        esc_html__( 'Activate', 'polanger-required-plugins' )
+                    );
+                }
+                break;
 
             case 'inactive':
-                $url = add_query_arg( array(
-                    'action' => 'activate',
-                    'plugin' => $slug,
+                // Activate link for inactive plugins.
+                $activate_url = add_query_arg( array(
+                    'action'   => 'activate',
+                    'plugin'   => $slug,
                     '_wpnonce' => $nonce,
                 ), $base_url );
-                return sprintf(
-                    '<a href="%s" class="button">%s</a>',
-                    esc_url( $url ),
+                $links[] = sprintf(
+                    '<a href="%s" class="button button-primary">%s</a>',
+                    esc_url( $activate_url ),
                     esc_html__( 'Activate', 'polanger-required-plugins' )
                 );
+                break;
 
             case 'not_installed':
             default:
-                $url = add_query_arg( array(
-                    'action' => 'install',
-                    'plugin' => $slug,
+                // Install link for not installed plugins.
+                $install_url = add_query_arg( array(
+                    'action'   => 'install',
+                    'plugin'   => $slug,
                     '_wpnonce' => $nonce,
                 ), $base_url );
-                return sprintf(
+                $links[] = sprintf(
                     '<a href="%s" class="button button-primary">%s</a>',
-                    esc_url( $url ),
+                    esc_url( $install_url ),
                     esc_html__( 'Install', 'polanger-required-plugins' )
                 );
+                break;
         }
+
+        return implode( ' ', $links );
     }
 
     /**
@@ -718,7 +940,7 @@ class Polanger_Required_Plugins {
         $slug   = sanitize_key( $_GET['plugin'] );
 
         // Whitelist allowed actions.
-        if ( ! in_array( $action, array( 'install', 'activate', 'update' ), true ) ) {
+        if ( ! in_array( $action, array( 'install', 'activate', 'deactivate', 'update' ), true ) ) {
             return;
         }
 
@@ -739,30 +961,34 @@ class Polanger_Required_Plugins {
 
         $plugin = $this->plugins[ $slug ];
 
-        $result = false;
-        $error_message = '';
+        $error_code = '';
 
         if ( $action === 'install' ) {
             $result = $this->install_plugin( $plugin );
-            if ( ! $result ) {
-                $error_message = 'install_failed';
+            if ( $result !== true ) {
+                $error_code = is_string( $result ) ? $result : 'install_failed';
             }
         } elseif ( $action === 'activate' ) {
             $result = $this->activate_plugin( $plugin );
             if ( ! $result ) {
-                $error_message = 'activate_failed';
+                $error_code = 'activate_failed';
+            }
+        } elseif ( $action === 'deactivate' ) {
+            $result = $this->deactivate_plugin( $plugin );
+            if ( ! $result ) {
+                $error_code = 'deactivate_failed';
             }
         } elseif ( $action === 'update' ) {
             $result = $this->update_plugin( $plugin );
-            if ( ! $result ) {
-                $error_message = 'update_failed';
+            if ( $result !== true ) {
+                $error_code = is_string( $result ) ? $result : 'update_failed';
             }
         }
 
         // Redirect back with error message if failed.
         $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
-        if ( ! empty( $error_message ) ) {
-            $redirect_url = add_query_arg( 'prp_error', $error_message, $redirect_url );
+        if ( ! empty( $error_code ) ) {
+            $redirect_url = add_query_arg( 'prp_error', $error_code, $redirect_url );
             $redirect_url = add_query_arg( 'prp_plugin', $slug, $redirect_url );
         }
         wp_safe_redirect( $redirect_url );
@@ -905,25 +1131,15 @@ class Polanger_Required_Plugins {
      * Install a plugin.
      *
      * @param array $plugin Plugin config.
-     * @return bool Success.
+     * @return true|string True on success, error code string on failure.
      */
     private function install_plugin( array $plugin ) {
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-        require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
 
-        // Get download URL.
-        if ( $plugin['source'] === 'wordpress' ) {
-            $api = plugins_api( 'plugin_information', array( 'slug' => $plugin['slug'] ) );
-            if ( is_wp_error( $api ) ) {
-                return false;
-            }
-            $source = $api->download_link;
-        } else {
-            // Bundled - source is file path.
-            $source = $plugin['source'];
-            if ( ! file_exists( $source ) ) {
-                return false;
-            }
+        // Resolve download URL using central resolver.
+        $source = $this->resolve_download_url( $plugin );
+        if ( is_wp_error( $source ) ) {
+            return $source->get_error_code();
         }
 
         // Install with quiet skin.
@@ -931,13 +1147,15 @@ class Polanger_Required_Plugins {
         $upgrader = new Plugin_Upgrader( $skin );
         $result = $upgrader->install( $source );
 
-        if ( $result ) {
-            $this->clear_plugins_cache();
-            // Auto-activate after install.
-            $this->activate_plugin( $plugin );
+        if ( ! $result ) {
+            return 'install_failed';
         }
 
-        return (bool) $result;
+        $this->clear_plugins_cache();
+        // Auto-activate after install.
+        $this->activate_plugin( $plugin );
+
+        return true;
     }
 
     /**
@@ -959,43 +1177,59 @@ class Polanger_Required_Plugins {
     }
 
     /**
-     * Update a plugin.
+     * Deactivate a plugin.
      *
      * @param array $plugin Plugin config.
      * @return bool Success.
      */
+    private function deactivate_plugin( array $plugin ) {
+        $file = $this->get_plugin_file( $plugin['slug'] );
+
+        if ( ! $file ) {
+            return false;
+        }
+
+        deactivate_plugins( $file );
+
+        return true;
+    }
+
+    /**
+     * Update a plugin.
+     *
+     * @param array $plugin Plugin config.
+     * @return true|string True on success, error code string on failure.
+     */
     private function update_plugin( array $plugin ) {
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
-        require_once ABSPATH . 'wp-admin/includes/plugin-install.php';
 
         $skin = new Automatic_Upgrader_Skin();
         $upgrader = new Plugin_Upgrader( $skin );
 
+        // WordPress.org plugins use native upgrade method.
         if ( $plugin['source'] === 'wordpress' ) {
-            // WordPress.org plugin - use upgrade method.
             $file = $this->get_plugin_file( $plugin['slug'] );
             if ( ! $file ) {
-                return false;
+                return 'plugin_not_found';
             }
             $result = $upgrader->upgrade( $file );
         } else {
-            // Bundled plugin - delete existing and reinstall from source.
-            $source = $plugin['source'];
-            if ( ! file_exists( $source ) || ! is_readable( $source ) ) {
-                return false;
+            // For bundled, external, and license sources: delete + reinstall.
+            // Resolve download URL using central resolver.
+            $source = $this->resolve_download_url( $plugin );
+            if ( is_wp_error( $source ) ) {
+                return $source->get_error_code();
             }
 
             // Delete existing plugin first to allow reinstall.
             $file = $this->get_plugin_file( $plugin['slug'] );
             if ( $file ) {
-                // Deactivate before deletion.
                 deactivate_plugins( $file, true );
-                // Delete the plugin.
                 delete_plugins( array( $file ) );
                 $this->clear_plugins_cache();
             }
 
-            // Install fresh from source.
+            // Install fresh from resolved source.
             $result = $upgrader->install( $source );
 
             // Re-activate after install.
@@ -1008,11 +1242,12 @@ class Polanger_Required_Plugins {
             }
         }
 
-        if ( $result ) {
-            $this->clear_plugins_cache();
+        if ( ! $result ) {
+            return 'update_failed';
         }
 
-        return (bool) $result;
+        $this->clear_plugins_cache();
+        return true;
     }
 
     /**
@@ -1035,7 +1270,7 @@ class Polanger_Required_Plugins {
             }
 
             // Skip WordPress.org plugins - they are handled by WP core update system.
-            // Only inject bundled plugins that have a local source file.
+            // Only process bundled and external plugins.
             if ( $plugin['source'] === 'wordpress' ) {
                 continue;
             }
@@ -1055,10 +1290,10 @@ class Polanger_Required_Plugins {
 
             // Check if update is needed.
             if ( version_compare( $installed_version, $plugin['version'], '<' ) ) {
-                // Bundled plugin needs update - but don't add to WP's response.
-                // WP's native update button won't work with local paths.
+                // Bundled/External plugin needs update - but don't add to WP's response.
+                // WP's native update button won't work with local paths or external URLs.
                 // Instead, mark as "no_update" so WP doesn't show its update UI.
-                // Our own UI handles bundled plugin updates via update_plugin() method.
+                // Our own UI handles these plugin updates via update_plugin() method.
                 if ( ! isset( $transient->no_update ) ) {
                     $transient->no_update = array();
                 }

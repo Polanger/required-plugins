@@ -69,6 +69,54 @@ polanger_require_plugins([
 ]);
 ```
 
+### With External Plugin (CDN/Remote Server)
+
+```php
+polanger_require_plugins([
+    'woocommerce',
+    [
+        'slug'    => 'pro-addon',
+        'name'    => 'Pro Addon',
+        'source'  => 'https://cdn.example.com/plugins/pro-addon.zip',
+        'version' => '2.0.0',
+    ],
+], [
+    'allowed_domains' => ['cdn.example.com'], // Security: whitelist allowed domains
+]);
+```
+
+### With License-Protected Plugin (Premium Themes)
+
+For premium themes that require license validation before downloading plugins:
+
+```php
+// Step 1: Register the plugin with 'license' source
+polanger_require_plugins([
+    [
+        'slug'   => 'theme-pro-features',
+        'name'   => 'Theme Pro Features',
+        'source' => 'license',
+    ],
+]);
+
+// Step 2: Add your license handler (in theme's functions.php)
+add_filter('polanger_license_download_url', function($url, $plugin) {
+    // Your license API call here
+    $response = wp_remote_post('https://api.yourtheme.com/download', [
+        'body' => [
+            'license' => get_option('theme_license_key'),
+            'plugin'  => $plugin['slug'],
+            'domain'  => home_url(),
+        ]
+    ]);
+    
+    $data = json_decode(wp_remote_retrieve_body($response), true);
+    return $data['download_url'] ?? new WP_Error('license_invalid', 'Invalid license');
+}, 10, 2);
+```
+
+This architecture allows you to integrate any license system (Envato, EDD, WooCommerce, custom) without modifying the library.
+
 ### Full Options
 
 ```php
@@ -80,11 +128,12 @@ polanger_require_plugins([
         'required' => true,               // true = required, false = recommended
     ],
 ], [
-    'id'          => 'my-theme',
-    'menu_title'  => 'Install Plugins',
-    'menu_slug'   => 'my-theme-plugins',
-    'parent_slug' => 'themes.php',
-    'capability'  => 'install_plugins',
+    'id'              => 'my-theme',
+    'menu_title'      => 'Install Plugins',
+    'menu_slug'       => 'my-theme-plugins',
+    'parent_slug'     => 'themes.php',
+    'capability'      => 'install_plugins',
+    'allowed_domains' => ['cdn.example.com'], // Whitelist for external sources
 ]);
 ```
 
@@ -110,6 +159,7 @@ After activating the theme, WordPress will show a notice asking the user to inst
 - **Native WordPress update integration** - Version-based update detection
 - **WordPress.org plugin support** - Install from repository
 - **Bundled plugin support** - Install from theme ZIP files
+- **External plugin support** - Install from CDN/remote servers (HTTPS required)
 - **Automatic activation** - Plugins activate after install
 - **Native WordPress admin UI** - Uses WP admin table styling
 - **Required and recommended** - Distinguish plugin importance
@@ -144,6 +194,22 @@ Inspired by the long-standing [TGM Plugin Activation](http://tgmpluginactivation
 If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
+
+### 4.1.0
+- **Activate/Deactivate buttons** - Full plugin lifecycle management from the UI
+- **Smart admin notice** - Update-only notifications are now dismissible with "Updates available" message
+- **Improved notice logic** - `needs_update` status no longer triggers "required plugin" warning
+- **deactivate_plugin()** - New method for plugin deactivation
+
+### 4.0.0
+- **External plugin support** - Install plugins from CDN/remote servers via HTTPS URLs
+- **License source support** - Hook-based architecture for premium theme license integration (optional)
+- **Source Resolver** - Central `resolve_download_url()` for clean separation of concerns
+- **`polanger_license_download_url` filter** - Integrate any license system (Envato, EDD, WooCommerce)
+- **Security layer** - HTTPS required, .zip validation, optional domain whitelist
+- **Four source types** - WordPress.org, Bundled, External, License
+- **Detailed error messages** - Developer-friendly error codes and descriptions
+- **`allowed_domains` config** - Whitelist trusted domains for external sources
 
 ### 3.3.0
 - **TextDomain matching** - get_plugin_file() now matches by TextDomain for edge cases

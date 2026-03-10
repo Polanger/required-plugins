@@ -1,7 +1,7 @@
 {
     "name": "polanger/required-plugins",
     "description": "A minimal ~750 line WordPress library for requiring plugins. Clean replacement for TGMPA with update support.",
-    "version": "3.3.0",
+    "version": "4.1.0",
     "type": "library",
     "license": "GPL-2.0-or-later",
     "authors": [
