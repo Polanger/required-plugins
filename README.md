@@ -164,7 +164,7 @@ After activating the theme, WordPress will show a notice asking the user to inst
 - **Native WordPress admin UI** - Uses WP admin table styling
 - **Required and recommended** - Distinguish plugin importance
 - **Smart admin notice** - Required can't be dismissed, recommended can
-- **Performance optimized** - Cached get_plugins() calls
+- **Performance optimized** - Cached get_plugins() + memoized status calls
 - **Zero dependencies** - No external libraries
 
 ## Requirements
@@ -194,6 +194,17 @@ Inspired by the long-standing [TGM Plugin Activation](http://tgmpluginactivation
 If you find this project useful, consider giving it a ⭐ on GitHub.
 
 ## Changelog
+
+### 4.2.0
+- **Bug fix** - `get_installed_version()` now delegates to `get_plugin_file()` so TextDomain-based slug matching is always used
+- **Bug fix** - `install_plugin()` now surfaces activation failures instead of silently ignoring them
+- **Bug fix** - Queue bulk installer now correctly tracks failed plugins (`!== true` check)
+- **Security** - Bundled plugin sources validated with `realpath()` + theme directory boundary to prevent path traversal
+- **Performance** - `get_status()` is now memoized per request via `$status_cache`, eliminating redundant filesystem reads
+- **Code quality** - Extracted `get_base_url()` helper to centralise admin page URL across all redirects and links
+- **Code quality** - Extracted `verify_bulk_request()` helper to deduplicate nonce + capability checks
+- **Code quality** - Fixed double `array_merge()` call in `admin_notice()`
+- **Code quality** - Added `empty($this->config)` guard to `admin_notice()`, `admin_menu()`, `render_page()`
 
 ### 4.1.0
 - **Activate/Deactivate buttons** - Full plugin lifecycle management from the UI
