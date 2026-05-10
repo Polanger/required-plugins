@@ -6,10 +6,48 @@
  * Single file, zero dependencies, built on native WordPress APIs.
  *
  * @package Polanger_Required_Plugins
- * @version 4.1.0
+ * @version 4.2.0
  * @author  Polanger
  * @license GPL-2.0-or-later
  * @link    https://polanger.com/polanger-required-plugins-polanger-rp/
+ *
+ * Changelog:
+ *
+ * 4.2.0 - 2026-05-10
+ *   Bug fixes:
+ *   - Fixed get_installed_version() not using get_plugin_file() internally,
+ *     causing TextDomain-based slug matching to be silently skipped. Version
+ *     detection now delegates to get_plugin_file() for full consistency.
+ *   - Fixed install_plugin() silently ignoring activate_plugin() failures.
+ *     If activation fails after a successful install the method now returns
+ *     'activate_failed' so the error is surfaced to the user.
+ *   - Fixed handle_queue() not distinguishing between false and a WP_Error
+ *     string when tracking failed plugins; now checks `!== true`.
+ *
+ *   Security:
+ *   - Added realpath() + theme-directory boundary check for bundled (local)
+ *     plugin sources in resolve_download_url(). Path traversal attempts
+ *     (e.g. ../../wp-config.php) now return a WP_Error instead of proceeding.
+ *   - Added corresponding 'source_not_allowed' error code and message.
+ *
+ *   Performance:
+ *   - Added $status_cache property so get_status() is memoized per-request.
+ *     Previously admin_notice(), render_page(), and get_actionable_slugs()
+ *     each triggered a full get_status() pass over all plugins.
+ *   - clear_plugins_cache() now also resets $status_cache so post-install
+ *     status reads remain accurate.
+ *
+ *   Code quality:
+ *   - Fixed double array_merge($not_installed, $inactive) in admin_notice().
+ *     Result is now computed once into $all_missing.
+ *   - Added empty $this->config guard to admin_notice(), admin_menu(), and
+ *     render_page() to prevent undefined-index errors if a hook fires before
+ *     register() is called.
+ *   - Extracted get_base_url() helper to centralise the admin page URL.
+ *     All redirects and links now call this method instead of repeating
+ *     admin_url($parent_slug.'?page='.$menu_slug) inline.
+ *   - Extracted verify_bulk_request() helper to deduplicate nonce +
+ *     capability checks shared by handle_queue() and handle_selected_install().
  */
 
 // Prevent direct access.
@@ -92,6 +130,13 @@ class Polanger_Required_Plugins {
      * @var array|null
      */
     private $installed_plugins = null;
+
+    /**
+     * Cached plugin statuses.
+     *
+     * @var array
+     */
+    private $status_cache = array();
 
     /**
      * Constructor.
@@ -177,28 +222,39 @@ class Polanger_Required_Plugins {
     }
 
     /**
-     * Get plugin status.
+     * Get plugin status (memoized).
+     *
+     * Results are cached per-request so repeated calls (admin_notice, render_page,
+     * get_actionable_slugs) do not trigger redundant filesystem reads.
+     * Cache is cleared whenever plugins are installed/updated via clear_plugins_cache().
      *
      * @param array $plugin Plugin config.
      * @return string Status: active, inactive, not_installed, needs_update.
      */
     private function get_status( array $plugin ) {
+        $slug = $plugin['slug'];
+
+        if ( isset( $this->status_cache[ $slug ] ) ) {
+            return $this->status_cache[ $slug ];
+        }
+
         if ( ! function_exists( 'is_plugin_active' ) ) {
             require_once ABSPATH . 'wp-admin/includes/plugin.php';
         }
 
-        $file = $this->get_plugin_file( $plugin['slug'] );
+        $file = $this->get_plugin_file( $slug );
 
         if ( ! $file ) {
-            return 'not_installed';
+            $status = 'not_installed';
+        } elseif ( $this->needs_update( $plugin ) ) {
+            $status = 'needs_update';
+        } else {
+            $status = is_plugin_active( $file ) ? 'active' : 'inactive';
         }
 
-        // Check if update is needed.
-        if ( $this->needs_update( $plugin ) ) {
-            return 'needs_update';
-        }
+        $this->status_cache[ $slug ] = $status;
 
-        return is_plugin_active( $file ) ? 'active' : 'inactive';
+        return $status;
     }
 
     /**
@@ -224,20 +280,22 @@ class Polanger_Required_Plugins {
     /**
      * Get installed plugin version.
      *
+     * Delegates to get_plugin_file() so TextDomain fallback is always used,
+     * keeping version detection consistent with file resolution logic.
+     *
      * @param string $slug Plugin slug.
-     * @return string|false Version or false.
+     * @return string|false Version string or false if not installed.
      */
     private function get_installed_version( $slug ) {
-        $plugins = $this->get_installed_plugins();
+        $file = $this->get_plugin_file( $slug );
 
-        foreach ( $plugins as $file => $data ) {
-            $plugin_dir = dirname( $file );
-            if ( $plugin_dir === $slug || $file === $slug . '.php' ) {
-                return $data['Version'];
-            }
+        if ( ! $file ) {
+            return false;
         }
 
-        return false;
+        $plugins = $this->get_installed_plugins();
+
+        return $plugins[ $file ]['Version'] ?? false;
     }
 
     /**
@@ -256,12 +314,16 @@ class Polanger_Required_Plugins {
     }
 
     /**
-     * Clear installed plugins cache.
+     * Clear installed plugins cache and status cache.
+     *
+     * Must be called after any install/update/deactivate operation so that
+     * subsequent get_status() calls reflect the new state.
      *
      * @return void
      */
     private function clear_plugins_cache() {
         $this->installed_plugins = null;
+        $this->status_cache      = array();
         wp_clean_plugins_cache( true );
     }
 
@@ -424,11 +486,20 @@ class Polanger_Required_Plugins {
         }
 
         // Bundled - local file path.
-        if ( ! file_exists( $source ) ) {
+        // Resolve to a real path to prevent path traversal (e.g. ../../wp-config.php).
+        $real = realpath( $source );
+
+        if ( ! $real ) {
             return new \WP_Error( 'source_not_found', __( 'Plugin source file not found.', 'polanger-required-plugins' ) );
         }
 
-        return $source;
+        // Restrict bundled ZIPs to within the active theme directory.
+        $theme_dir = realpath( get_template_directory() );
+        if ( $theme_dir && strpos( $real, $theme_dir ) !== 0 ) {
+            return new \WP_Error( 'source_not_allowed', __( 'Bundled plugin source must be located inside the theme directory.', 'polanger-required-plugins' ) );
+        }
+
+        return $real;
     }
 
     /**
@@ -448,6 +519,10 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function admin_notice() {
+        if ( empty( $this->config ) ) {
+            return;
+        }
+
         if ( ! current_user_can( $this->config['capability'] ) ) {
             return;
         }
@@ -470,8 +545,9 @@ class Polanger_Required_Plugins {
 
         // Separate by required/recommended for not_installed and inactive only.
         // needs_update plugins are already installed, so they're less critical.
-        $required_missing = array_filter( array_merge( $not_installed, $inactive ), function( $p ) { return $p['required']; } );
-        $recommended_missing = array_filter( array_merge( $not_installed, $inactive ), function( $p ) { return ! $p['required']; } );
+        $all_missing         = array_merge( $not_installed, $inactive );
+        $required_missing    = array_filter( $all_missing, function( $p ) { return $p['required']; } );
+        $recommended_missing = array_filter( $all_missing, function( $p ) { return ! $p['required']; } );
 
         $has_required_missing = ! empty( $required_missing );
         $has_recommended_missing = ! empty( $recommended_missing );
@@ -490,7 +566,7 @@ class Polanger_Required_Plugins {
             }
         }
 
-        $url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+        $url = $this->get_base_url();
 
         // Build message parts.
         $message_parts = array();
@@ -595,6 +671,10 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function admin_menu() {
+        if ( empty( $this->config ) ) {
+            return;
+        }
+
         add_submenu_page(
             $this->config['parent_slug'],
             $this->config['menu_title'],
@@ -611,9 +691,13 @@ class Polanger_Required_Plugins {
      * @return void
      */
     public function render_page() {
-        $actionable = $this->get_actionable_slugs();
+        if ( empty( $this->config ) ) {
+            return;
+        }
+
+        $actionable    = $this->get_actionable_slugs();
         $is_processing = ! empty( $_GET['queue'] );
-        $form_action = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+        $form_action   = $this->get_base_url();
         ?>
         <div class="wrap">
             <h1><?php echo esc_html( $this->config['menu_title'] ); ?></h1>
@@ -643,6 +727,7 @@ class Polanger_Required_Plugins {
                     'update_failed'         => __( 'Plugin update failed. The download or extraction may have failed.', 'polanger-required-plugins' ),
                     'plugin_not_found'      => __( 'Plugin not found. It may have been deleted or moved.', 'polanger-required-plugins' ),
                     'source_not_found'      => __( 'Plugin source file not found. Check the file path in your theme configuration.', 'polanger-required-plugins' ),
+                    'source_not_allowed'    => __( 'Bundled plugin source must be located inside the theme directory. Path traversal is not permitted.', 'polanger-required-plugins' ),
                     'wporg_api_failed'      => __( 'WordPress.org API request failed. The plugin slug may be incorrect or the API is unavailable.', 'polanger-required-plugins' ),
                     // External source security errors
                     'invalid_protocol'      => __( 'External source must use HTTPS. HTTP is not allowed for security reasons.', 'polanger-required-plugins' ),
@@ -814,10 +899,10 @@ class Polanger_Required_Plugins {
      * @return string HTML link.
      */
     private function get_action_link( array $plugin, string $status ) {
-        $slug = $plugin['slug'];
-        $nonce = wp_create_nonce( 'polanger_action_' . $slug );
-        $base_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
-        $links = array();
+        $slug     = $plugin['slug'];
+        $nonce    = wp_create_nonce( 'polanger_action_' . $slug );
+        $base_url = $this->get_base_url();
+        $links    = array();
 
         switch ( $status ) {
             case 'active':
@@ -986,7 +1071,7 @@ class Polanger_Required_Plugins {
         }
 
         // Redirect back with error message if failed.
-        $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+        $redirect_url = $this->get_base_url();
         if ( ! empty( $error_code ) ) {
             $redirect_url = add_query_arg( 'prp_error', $error_code, $redirect_url );
             $redirect_url = add_query_arg( 'prp_plugin', $slug, $redirect_url );
@@ -1002,23 +1087,15 @@ class Polanger_Required_Plugins {
      * @return void
      */
     private function handle_selected_install() {
-        // Verify nonce.
-        if ( ! wp_verify_nonce( $_POST['_wpnonce'] ?? '', 'polanger_bulk_install' ) ) {
-            wp_die( __( 'Security check failed.', 'polanger-required-plugins' ) );
-        }
-
-        // Check capability.
-        if ( ! current_user_can( $this->config['capability'] ) ) {
-            wp_die( __( 'You do not have permission to perform this action.', 'polanger-required-plugins' ) );
-        }
+        $this->verify_bulk_request( $_POST['_wpnonce'] ?? '' );
 
         // Get selected plugins.
-        $selected = isset( $_POST['plugins'] ) && is_array( $_POST['plugins'] ) 
-            ? array_map( 'sanitize_key', $_POST['plugins'] ) 
+        $selected = isset( $_POST['plugins'] ) && is_array( $_POST['plugins'] )
+            ? array_map( 'sanitize_key', $_POST['plugins'] )
             : array();
 
         if ( empty( $selected ) ) {
-            wp_safe_redirect( admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] ) );
+            wp_safe_redirect( $this->get_base_url() );
             exit;
         }
 
@@ -1026,7 +1103,7 @@ class Polanger_Required_Plugins {
         $redirect_url = add_query_arg( array(
             'queue'    => implode( ',', $selected ),
             '_wpnonce' => wp_create_nonce( 'polanger_bulk_install' ),
-        ), admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] ) );
+        ), $this->get_base_url() );
 
         wp_safe_redirect( $redirect_url );
         exit;
@@ -1039,23 +1116,17 @@ class Polanger_Required_Plugins {
      * @return void
      */
     private function handle_queue() {
-        // Verify nonce.
-        if ( ! wp_verify_nonce( $_GET['_wpnonce'] ?? '', 'polanger_bulk_install' ) ) {
-            wp_die( __( 'Security check failed.', 'polanger-required-plugins' ) );
-        }
-
-        // Check capability.
-        if ( ! current_user_can( $this->config['capability'] ) ) {
-            wp_die( __( 'You do not have permission to perform this action.', 'polanger-required-plugins' ) );
-        }
+        $this->verify_bulk_request( $_GET['_wpnonce'] ?? '' );
 
         // Parse queue and failed plugins list.
-        $queue = array_filter( array_map( 'sanitize_key', explode( ',', $_GET['queue'] ) ) );
-        $failed = isset( $_GET['prp_failed'] ) ? array_filter( array_map( 'sanitize_key', explode( ',', $_GET['prp_failed'] ) ) ) : array();
+        $queue  = array_filter( array_map( 'sanitize_key', explode( ',', $_GET['queue'] ) ) );
+        $failed = isset( $_GET['prp_failed'] )
+            ? array_filter( array_map( 'sanitize_key', explode( ',', $_GET['prp_failed'] ) ) )
+            : array();
 
         if ( empty( $queue ) ) {
             // Queue complete - redirect with failed plugins if any.
-            $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+            $redirect_url = $this->get_base_url();
             if ( ! empty( $failed ) ) {
                 $redirect_url = add_query_arg( 'prp_failed', implode( ',', $failed ), $redirect_url );
             }
@@ -1065,34 +1136,28 @@ class Polanger_Required_Plugins {
 
         // Get current plugin to process.
         $current_slug = array_shift( $queue );
-        $result = true;
+        $result       = true;
 
         // Find plugin config.
         if ( isset( $this->plugins[ $current_slug ] ) ) {
             $plugin = $this->plugins[ $current_slug ];
             $status = $this->get_status( $plugin );
 
-            // Install if not installed.
             if ( $status === 'not_installed' ) {
                 $result = $this->install_plugin( $plugin );
             } elseif ( $status === 'needs_update' ) {
-                // Update if needs update.
                 $result = $this->update_plugin( $plugin );
             } elseif ( $status === 'inactive' ) {
-                // Activate if installed but inactive.
                 $result = $this->activate_plugin( $plugin );
             }
 
             // Track failed plugins.
-            if ( ! $result ) {
+            if ( $result !== true ) {
                 $failed[] = $current_slug;
             }
         }
 
-        // Build redirect URL.
-        $redirect_url = admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
-
-        // Continue with remaining queue.
+        // Build redirect URL and continue with remaining queue.
         $redirect_args = array(
             '_wpnonce' => wp_create_nonce( 'polanger_bulk_install' ),
         );
@@ -1105,10 +1170,39 @@ class Polanger_Required_Plugins {
             $redirect_args['prp_failed'] = implode( ',', $failed );
         }
 
-        $redirect_url = add_query_arg( $redirect_args, $redirect_url );
-
-        wp_safe_redirect( $redirect_url );
+        wp_safe_redirect( add_query_arg( $redirect_args, $this->get_base_url() ) );
         exit;
+    }
+
+    /**
+     * Get the base admin page URL for this library.
+     *
+     * Centralises the URL so handle_queue(), handle_selected_install(),
+     * render_page(), and get_action_link() all redirect/link to the same place.
+     *
+     * @return string Admin URL.
+     */
+    private function get_base_url() {
+        return admin_url( $this->config['parent_slug'] . '?page=' . $this->config['menu_slug'] );
+    }
+
+    /**
+     * Verify a bulk nonce and capability, wp_die() on failure.
+     *
+     * Extracted from handle_queue() and handle_selected_install() to avoid
+     * duplicating the same three lines in every bulk handler.
+     *
+     * @param string $nonce_value Raw nonce value from request.
+     * @return void
+     */
+    private function verify_bulk_request( $nonce_value ) {
+        if ( ! wp_verify_nonce( $nonce_value, 'polanger_bulk_install' ) ) {
+            wp_die( __( 'Security check failed.', 'polanger-required-plugins' ) );
+        }
+
+        if ( ! current_user_can( $this->config['capability'] ) ) {
+            wp_die( __( 'You do not have permission to perform this action.', 'polanger-required-plugins' ) );
+        }
     }
 
     /**
@@ -1152,8 +1246,11 @@ class Polanger_Required_Plugins {
         }
 
         $this->clear_plugins_cache();
-        // Auto-activate after install.
-        $this->activate_plugin( $plugin );
+
+        // Auto-activate after install. Surface failure so the caller can report it.
+        if ( ! $this->activate_plugin( $plugin ) ) {
+            return 'activate_failed';
+        }
 
         return true;
     }
